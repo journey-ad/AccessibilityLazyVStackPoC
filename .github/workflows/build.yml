@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP: AccessibilityLazyVStackPoC
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project "$APP.xcodeproj" \
+            -scheme "$APP" \
+            -configuration Release \
+            -derivedDataPath build \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent "build/Build/Products/Release/$APP.app" "$APP.app.zip"
+          lipo -archs "build/Build/Products/Release/$APP.app/Contents/MacOS/$APP"
+          shasum -a 256 "$APP.app.zip" | tee sha256.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APP }}-app
+          path: ${{ env.APP }}.app.zip
+
+      - name: Update latest release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Automatic Release build of \`$GITHUB_SHA\` on \`macos-26\` with Xcode $(xcodebuild -version | head -1 | awk '{print $2}')."
+            echo
+            echo "Universal binary (arm64 + x86_64), ad-hoc signed, requires macOS 14.2 or later."
+            echo
+            echo '```'
+            cat sha256.txt
+            echo '```'
+          } > notes.md
+          gh release view latest >/dev/null 2>&1 \
+            || gh release create latest --title "Latest Build" --target "$GITHUB_SHA" --notes-file notes.md
+          gh release edit latest --notes-file notes.md --latest
+          gh release upload latest "$APP.app.zip" --clobber
